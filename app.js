@@ -5,6 +5,23 @@ const dotenv = require('dotenv');
 // Load environment variables
 dotenv.config();
 
+const helmet = require('helmet');
+const xss = require('xss-clean');
+const mongoSanitize = require('express-mongo-sanitize');
+const rateLimit = require('express-rate-limit');
+
+// Middlewares
+app.use(helmet()); // Security headers
+app.use(mongoSanitize()); // Prevents NoSQL injection
+app.use(xss()); // Prevents XSS attacks
+
+// Rate Limiting (একই আইপি থেকে ১০ মিনিটে ১০০ বার বেশি রিকোয়েস্ট ব্লক করবে)
+const limiter = rateLimit({
+  windowMs: 10 * 60 * 1000, 
+  max: 100
+});
+app.use('/api/', limiter);
+
 // Import Routes (Modules)
 const inventoryRoutes = require('./src/modules/inventory/inventory.routes');
 const authRoutes = require('./src/modules/auth/auth.routes'); 
