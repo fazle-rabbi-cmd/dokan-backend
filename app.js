@@ -7,7 +7,7 @@ dotenv.config();
 
 // Import Routes (Modules)
 const inventoryRoutes = require('./src/modules/inventory/inventory.routes');
-const authRoutes = require('./src/modules/auth/auth.routes'); // Uncomment when created
+const authRoutes = require('./src/modules/auth/auth.routes'); 
 
 const app = express();
 
