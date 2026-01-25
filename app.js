@@ -2,69 +2,72 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const dotenv = require('dotenv');
-// Load environment variables
-dotenv.config();
-
 const helmet = require('helmet');
-const xss = require('xss-clean');
-const mongoSanitize = require('express-mongo-sanitize');
+const sanitize = require('mongo-sanitize'); // এটি আমরা ব্যবহার করছি
 const rateLimit = require('express-rate-limit');
 
-// Middlewares
-app.use(helmet()); // Security headers
-app.use(mongoSanitize()); // Prevents NoSQL injection
-app.use(xss()); // Prevents XSS attacks
+dotenv.config();
 
-// Rate Limiting (একই আইপি থেকে ১০ মিনিটে ১০০ বার বেশি রিকোয়েস্ট ব্লক করবে)
-const limiter = rateLimit({
-  windowMs: 10 * 60 * 1000, 
-  max: 100
-});
-app.use('/api/', limiter);
-
-// Import Routes (Modules)
 const inventoryRoutes = require('./src/modules/inventory/inventory.routes');
 const authRoutes = require('./src/modules/auth/auth.routes'); 
 
 const app = express();
 
-// 1. Global Middleware
-// Morgan logs incoming requests to the console (useful for development)
+// --- ১. গ্লোবাল মিডলওয়্যার (Body Parser আগে থাকতে হবে) ---
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+app.use(cors());
+
 if (process.env.NODE_ENV === 'development') {
     app.use(morgan('dev'));
 }
 
-// Enable CORS for frontend communication
-app.use(cors());
+// --- ২. সিকিউরিটি মিডলওয়্যার (XSS Clean বাদ দেওয়া হয়েছে) ---
+app.use(helmet()); // Security headers set করে
 
-// Body parser (Allowing JSON and URL-encoded data)
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+// Custom NoSQL Injection Protection
+app.use((req, res, next) => {
+    req.body = sanitize(req.body);
+    req.query = sanitize(req.query);
+    req.params = sanitize(req.params);
+    next();
+});
 
+// কাস্টম XSS স্যানিটাইজার (xss-clean এর বদলে নিরাপদ বিকল্প)
+app.use((req, res, next) => {
+    const cleanHTML = (val) => {
+        if (typeof val === 'string') {
+            return val.replace(/[<>]/g, ''); // ট্যাগগুলো রিমুভ করবে
+        }
+        return val;
+    };
+    if (req.body) {
+        Object.keys(req.body).forEach(key => {
+            req.body[key] = cleanHTML(req.body[key]);
+        });
+    }
+    next();
+});
 
+const limiter = rateLimit({
+    windowMs: 10 * 60 * 1000, 
+    max: 100
+});
+app.use('/api/', limiter);
 
-// 2. API Routes
-// Health Check
+// --- ৩. এপিআই রাউটস ---
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'UP', message: 'Storage System API is running' });
 });
 
-// Mount Module Routes
 app.use('/api/v1/inventory', inventoryRoutes);
 app.use('/api/v1/auth', authRoutes);
 
-
-
-// 3. Error Handling
-// Catch 404 and forward to error handler
+// --- ৪. এরর হ্যান্ডলিং ---
 app.use((req, res, next) => {
-    res.status(404).json({
-        success: false,
-        message: 'Resource not found'
-    });
+    res.status(404).json({ success: false, message: 'Resource not found' });
 });
 
-// Global Error Handler
 app.use((err, req, res, next) => {
     const statusCode = err.statusCode || 500;
     res.status(statusCode).json({
