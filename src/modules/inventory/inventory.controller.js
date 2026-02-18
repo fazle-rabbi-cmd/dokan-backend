@@ -1,48 +1,72 @@
 const Inventory = require('./inventory.model');
 const Log = require('../logs/log.model');
+const { Parser } = require('json2csv'); // এটি নিশ্চিত করো ইনস্টল আছে (npm install json2csv)
 
-// ১. আইটেম অ্যাড (Single & Bulk) + লগ
 exports.addItem = async (req, res) => {
   try {
-    if (!req.user || !req.user.id) {
-      return res.status(401).json({ success: false, message: "User not authenticated" });
+    // Multer বডি প্রসেস করার পর ডাটা এখান থেকে নেবে
+    const { name, quantity, category, warehouseLocation, minStockLevel } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ success: false, message: "Product name is required" });
     }
 
-    let items;
-    if (Array.isArray(req.body)) {
-      items = req.body.map(item => ({ ...item, addedBy: req.user.id }));
-      const newItems = await Inventory.insertMany(items);
+    // SKU এবং Status লজিক
+    const prefix = name.substring(0, 3).toUpperCase();
+    const sku = `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const qty = Number(quantity) || 0;
+    const minLvl = Number(minStockLevel) || 5;
 
-      // Bulk লগের জন্য
-      const logEntries = newItems.map(item => ({
-        itemId: item._id,
-        itemName: item.name,
-        action: 'CREATE',
-        changes: { after: { quantity: item.quantity, status: item.status } },
-        performedBy: req.user.id
-      }));
-      await Log.insertMany(logEntries);
+    let status = 'In Stock';
+    if (qty <= 0) status = 'Out of Stock';
+    else if (qty <= minLvl) status = 'Low Stock';
 
-      return res.status(201).json({ success: true, count: newItems.length, data: newItems });
-    } else {
-      req.body.addedBy = req.user.id;
-      const newItem = await Inventory.create(req.body);
+    const newItem = await Inventory.create({
+      name,
+      sku,
+      quantity: qty,
+      minStockLevel: minLvl,
+      category,
+      warehouseLocation,
+      status,
+      addedBy: req.user.id,
+      image: req.file ? req.file.path : undefined // Cloudinary URL
+    });
 
-      // Single লগের জন্য
-      await Log.create({
-        itemId: newItem._id,
-        itemName: newItem.name,
-        action: 'CREATE',
-        changes: { after: { quantity: newItem.quantity, status: newItem.status } },
-        performedBy: req.user.id
-      });
+    // অ্যাক্টিভিটি লগ
+    await Log.create({
+      itemId: newItem._id,
+      itemName: newItem.name,
+      action: 'CREATE',
+      changes: { after: { quantity: newItem.quantity, status: newItem.status } },
+      performedBy: req.user.id
+    });
 
-      return res.status(201).json({ success: true, data: newItem });
-    }
+    res.status(201).json({ success: true, data: newItem });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
 };
+
+// Phase 5: Export to CSV ফাংশন
+exports.exportToCSV = async (req, res) => {
+  try {
+    const items = await Inventory.find().select('name sku quantity category status warehouseLocation');
+    
+    const fields = ['name', 'sku', 'quantity', 'category', 'status', 'warehouseLocation'];
+    const opts = { fields };
+    const parser = new Parser(opts);
+    const csv = parser.parse(items);
+
+    res.header('Content-Type', 'text/csv');
+    res.attachment('inventory_report.csv');
+    return res.send(csv);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// বাকি ফাংশনগুলো (getAllItems, updateItem, deleteItem) আগের মতোই থাকবে...
 
 exports.getAllItems = async (req, res) => {
   try {
