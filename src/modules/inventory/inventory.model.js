@@ -7,6 +7,11 @@ const InventorySchema = new mongoose.Schema({
   minStockLevel: { type: Number, default: 5 },
   category: { type: String, required: true },
   warehouseLocation: { type: String, required: true }, 
+  supplier: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: 'Supplier',
+  required: [true, 'Please select a supplier for this item']
+},
   status: { 
     type: String, 
     enum: ['In Stock', 'Low Stock', 'Out of Stock'], 

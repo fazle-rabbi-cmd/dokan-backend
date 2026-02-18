@@ -1,11 +1,13 @@
 const Inventory = require('./inventory.model');
 const Log = require('../logs/log.model');
 const { Parser } = require('json2csv'); // এটি নিশ্চিত করো ইনস্টল আছে (npm install json2csv)
+const sendLowStockEmail = require('../../utils/emailService');
+const Supplier = require('../supplier/supplier.model');
 
 exports.addItem = async (req, res) => {
   try {
     // Multer বডি প্রসেস করার পর ডাটা এখান থেকে নেবে
-    const { name, quantity, category, warehouseLocation, minStockLevel } = req.body;
+    const { name, quantity, category, warehouseLocation, minStockLevel, supplier } = req.body;
 
     if (!name) {
       return res.status(400).json({ success: false, message: "Product name is required" });
@@ -28,6 +30,7 @@ exports.addItem = async (req, res) => {
       minStockLevel: minLvl,
       category,
       warehouseLocation,
+      supplier,
       status,
       addedBy: req.user.id,
       image: req.file ? req.file.path : undefined // Cloudinary URL
@@ -48,7 +51,6 @@ exports.addItem = async (req, res) => {
   }
 };
 
-// Phase 5: Export to CSV ফাংশন
 exports.exportToCSV = async (req, res) => {
   try {
     const items = await Inventory.find().select('name sku quantity category status warehouseLocation');
@@ -65,8 +67,6 @@ exports.exportToCSV = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
-// বাকি ফাংশনগুলো (getAllItems, updateItem, deleteItem) আগের মতোই থাকবে...
 
 exports.getAllItems = async (req, res) => {
   try {
@@ -111,22 +111,44 @@ exports.getAllItems = async (req, res) => {
   }
 };
 
-// ২. আইটেম আপডেট + লগ (Changes ট্র্যাক করবে)
 exports.updateItem = async (req, res) => {
   try {
     const itemId = req.query.id; 
     if (!itemId) return res.status(400).json({ success: false, message: "ID is required" });
 
-    let item = await Inventory.findById(itemId);
+    // ১. আইটেমটি খুঁজে বের করো এবং তার সাথে যুক্ত সাপ্লায়ারের ডাটা পপুলেট করো
+    let item = await Inventory.findById(itemId).populate('supplier');
     if (!item) return res.status(404).json({ success: false, message: "Item not found" });
 
-    // পরিবর্তনের আগের ডাটা স্টোর করা
     const beforeUpdate = { quantity: item.quantity, status: item.status };
 
+    // ২. নতুন ডাটা দিয়ে আপডেট করো
     Object.assign(item, req.body);
+
+    // ৩. স্ট্যাটাস অটো-আপডেট
+    if (item.quantity <= 0) {
+      item.status = 'Out of Stock';
+    } else if (item.quantity <= item.minStockLevel) {
+      item.status = 'Low Stock';
+    } else {
+      item.status = 'In Stock';
+    }
+
     await item.save(); 
 
-    // UPDATE Log তৈরি করা
+    // ৪. স্মার্ট অটোমেশন: পপুলেট করা সাপ্লায়ারকে সরাসরি মেইল পাঠানো
+    if (item.status === 'Low Stock' || item.status === 'Out of Stock') {
+      
+      // আমরা চেক করছি সাপ্লায়ার ডাটা আছে কি না এবং সে Active কি না
+      if (item.supplier && item.supplier.status === 'Active') {
+        sendLowStockEmail(item.name, item.quantity, item.supplier.email, item.supplier.name)
+          .catch(err => console.log("Email error:", err.message));
+      } else {
+        console.log("⚠️ সাপ্লায়ার খুঁজে পাওয়া যায়নি অথবা সাপ্লায়ার ইনঅ্যাক্টিভ।");
+      }
+    }
+
+    // ৫. UPDATE Log তৈরি করা
     await Log.create({
       itemId: item._id,
       itemName: item.name,
