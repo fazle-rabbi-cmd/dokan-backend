@@ -166,7 +166,6 @@ exports.updateItem = async (req, res) => {
   }
 };
 
-// ৩. আইটেম ডিলিট + লগ
 exports.deleteItem = async (req, res) => {
   try {
     const itemId = req.query.id; 
@@ -216,7 +215,6 @@ exports.getInventoryStats = async (req, res) => {
   }
 };
 
-// ৪. আইটেম হিস্ট্রি দেখার জন্য নতুন ফাংশন
 exports.getItemHistory = async (req, res) => {
   try {
     const query = req.query.id ? { itemId: req.query.id } : {};

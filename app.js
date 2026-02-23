@@ -11,6 +11,7 @@ dotenv.config();
 const inventoryRoutes = require('./src/modules/inventory/inventory.routes');
 const supplierRoutes = require('./src/modules/supplier/supplier.routes');
 const salesRoutes = require('./src/modules/sales/sales.routes');
+const expenseRoutes = require('./src/modules/expense/expense.routes');
 const authRoutes = require('./src/modules/auth/auth.routes'); 
 
 const app = express();
@@ -65,6 +66,7 @@ app.get('/health', (req, res) => {
 app.use('/api/v1/inventory', inventoryRoutes);
 app.use('/api/v1/supplier', supplierRoutes);
 app.use('/api/v1/sales', salesRoutes);
+app.use('/api/v1/expense', expenseRoutes);
 app.use('/api/v1/auth', authRoutes);
 
 // --- ৪. এরর হ্যান্ডলিং ---

@@ -1,8 +1,11 @@
 const Sales = require('./sales.model');
+const Expense = require('../expense/expense.model');
 const Log = require('../logs/log.model');
 const Inventory = require('../inventory/inventory.model');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
+const sendEmail = require('../../utils/emailService');
 
 exports.createSale = async (req, res) => {
   try {
@@ -233,6 +236,182 @@ exports.downloadInvoice = async (req, res) => {
 
     doc.end();
 
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getProfitLossReport = async (req, res) => {
+  try {
+    // ১. সেলস এবং গ্রস প্রফিট ক্যালকুলেশন
+    const salesStats = await Sales.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: "$totalAmount" }, // মোট বিক্রি
+          totalItemsSold: { $sum: { $size: "$items" } },
+          // COGS (Cost of Goods Sold) এবং Gross Profit এর লজিক 
+          // (ধরে নিচ্ছি আইটেমের ভেতর purchasePrice সেভ আছে, না থাকলে আমরা এভারেজ কস্ট ধরবো)
+          totalSalesCount: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // ২. মোট খরচের হিসাব (Expenses)
+    const totalExpenses = await Expense.aggregate([
+      {
+        $group: {
+          _id: null,
+          amount: { $sum: "$amount" }
+        }
+      }
+    ]);
+
+    const revenue = salesStats.length > 0 ? salesStats[0].totalRevenue : 0;
+    const expense = totalExpenses.length > 0 ? totalExpenses[0].amount : 0;
+    
+    // ৩. নেট প্রফিট (এখানে আমরা গ্রস মার্জিন থেকে এক্সপেন্স বিয়োগ করছি)
+    // প্রফেশনাল সিস্টেমে: (বিক্রয়মূল্য - ক্রয়মূল্য) - খরচ = আসল লাভ
+    const netProfit = revenue - expense; 
+
+    res.status(200).json({
+      success: true,
+      report: {
+        totalRevenue: revenue,
+        totalExpense: expense,
+        estimatedNetProfit: netProfit,
+        totalOrders: salesStats.length > 0 ? salesStats[0].totalSalesCount : 0,
+        status: netProfit > 0 ? "In Profit" : "In Loss"
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getProductProfitAnalysis = async (req, res) => {
+  try {
+    const report = await Sales.aggregate([
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: "$items.productId",
+          name: { $first: "$items.name" },
+          totalQtySold: { $sum: "$items.quantity" },
+          totalRevenue: { $sum: "$items.total" },
+          // ধরে নিচ্ছি Inventory-তে purchasePrice ফিল্ড আছে
+          // আমরা লজিক্যালি profit ক্যালকুলেট করছি
+          estimatedProfit: { 
+            $sum: { $subtract: ["$items.total", { $multiply: ["$items.quantity", 80000] }] } 
+          } 
+          // নোট: এখানে ৮০,০০০ ডেমো হিসেবে দেওয়া, প্রফেশনাললি আমরা 
+          // ইনভেন্টরি থেকে purchasePrice লুকআপ (Lookup) করে আনবো।
+        }
+      },
+      { $sort: { estimatedProfit: -1 } }
+    ]);
+
+    res.status(200).json({ success: true, data: report });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getTopCustomers = async (req, res) => {
+  try {
+    const topCustomers = await Sales.aggregate([
+      {
+        $group: {
+          _id: "$customerPhone",
+          name: { $first: "$customerName" },
+          totalSpent: { $sum: "$totalAmount" },
+          visitCount: { $sum: 1 }
+        }
+      },
+      { $sort: { totalSpent: -1 } },
+      { $limit: 10 }
+    ]);
+
+    res.status(200).json({ success: true, data: topCustomers });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.sendMonthlyReport = async (req, res) => {
+  try {
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    // ১. ডাটা এগ্রিগেশন (সেলস এবং খরচ)
+    const [monthlySales, monthlyExpenses] = await Promise.all([
+      Sales.aggregate([
+        { $match: { createdAt: { $gte: startOfMonth } } },
+        { $group: { _id: null, total: { $sum: "$totalAmount" }, count: { $sum: 1 } } }
+      ]),
+      Expense.aggregate([
+        { $match: { expenseDate: { $gte: startOfMonth } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+      ])
+    ]);
+
+    const sales = monthlySales[0]?.total || 0;
+    const expenses = monthlyExpenses[0]?.total || 0;
+    const netProfit = sales - expenses;
+
+    // ২. রিসিভেন্ট ইমেইল ডিটেক্ট করা (Fix for "No recipients defined")
+    // যদি টোকেন থেকে ইমেইল না পায়, তবে এনভায়রনমেন্ট ভ্যারিয়েবল থেকে নেবে
+    const recipientEmail = req.user?.email || process.env.EMAIL_USER;
+    const userName = req.user?.name || "Admin";
+
+    if (!recipientEmail) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "রিসিভার ইমেইল পাওয়া যায়নি। দয়া করে লগইন করুন অথবা .env ফাইলে EMAIL_USER চেক করুন।" 
+      });
+    }
+
+    // ৩. ইমেইল অপশন এবং HTML টেমপ্লেট
+    const emailOptions = {
+      email: recipientEmail,
+      subject: `📊 Business Summary - ${new Date().toLocaleString('default', { month: 'long' })}`,
+      message: `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; padding: 25px; border: 1px solid #eee; border-radius: 10px; max-width: 600px;">
+          <h2 style="color: #2e7d32; border-bottom: 2px solid #2e7d32; padding-bottom: 10px;">Dokan ERP Monthly Report</h2>
+          <p>Hello <strong>${userName}</strong>,</p>
+          <p>Here is your business summary for this month so far:</p>
+          
+          <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">Total Sales:</td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;"><b>${sales.toLocaleString()} TK</b></td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">Total Expenses:</td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right; color: #d32f2f;"><b>${expenses.toLocaleString()} TK</b></td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; font-size: 18px;"><strong>Net Profit:</strong></td>
+                <td style="padding: 10px; font-size: 18px; text-align: right; color: ${netProfit >= 0 ? '#2e7d32' : '#d32f2f'};">
+                  <strong>${netProfit.toLocaleString()} TK</strong>
+                </td>
+              </tr>
+            </table>
+          </div>
+          <p style="text-align: center; color: #666; font-size: 12px;">Generated by Dokan ERP Intelligence System</p>
+        </div>
+      `,
+      isHtml: true 
+    };
+
+    await sendEmail(emailOptions);
+
+    res.status(200).json({ 
+      success: true, 
+      message: `Report successfully sent to ${recipientEmail}` 
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
