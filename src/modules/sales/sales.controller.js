@@ -6,56 +6,68 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 const sendEmail = require('../../utils/emailService');
+const Customer = require('../customer/customer.model');
 
 exports.createSale = async (req, res) => {
   try {
     const { customerName, customerPhone, items, paymentMethod } = req.body;
     let totalAmount = 0;
+    let totalBuyingCost = 0;
 
-    // ১. প্রত্যেকটি আইটেম চেক করা এবং স্টক কমানো
     for (let item of items) {
       const product = await Inventory.findById(item.productId);
       if (!product || product.quantity < item.quantity) {
         return res.status(400).json({ success: false, message: `${product ? product.name : 'Item'} এর যথেষ্ট স্টক নেই!` });
       }
 
-      // স্টক কমানো
       product.quantity -= item.quantity;
       
-      // স্ট্যাটাস আপডেট (ইন্ডাস্ট্রি লজিক)
       if (product.quantity <= 0) product.status = 'Out of Stock';
       else if (product.quantity <= product.minStockLevel) product.status = 'Low Stock';
       
       await product.save();
       
-      item.name = product.name; // ইনভয়েসের জন্য নাম রাখা
+      item.name = product.name;
+      item.buyingPrice = product.buyingPrice;
       item.total = item.quantity * item.price;
       totalAmount += item.total;
+      totalBuyingCost += (item.quantity * product.buyingPrice);
     }
 
-    // ২. সেলস রেকর্ড তৈরি
     const invoiceNumber = `INV-${Date.now()}`;
-
+    const totalProfit = totalAmount - totalBuyingCost;
     const paidAmount = req.body.paidAmount || totalAmount;
     const dueAmount = totalAmount - paidAmount;
     const status = dueAmount <= 0 ? 'Paid' : (paidAmount > 0 ? 'Partial' : 'Due');
 
     const newSale = await Sales.create({
-    customerName, customerPhone, items, totalAmount, paidAmount, dueAmount, status,
+    customerName, customerPhone, items, totalAmount, paidAmount, dueAmount, status, totalProfit,
     paymentMethod, invoiceNumber, soldBy: req.user.id
     });
 
+    await Customer.findOneAndUpdate(
+      { phone: customerPhone },
+      { 
+        $inc: { 
+          totalSpent: totalAmount, 
+          totalDue: dueAmount, 
+          points: Math.floor(totalAmount / 100) // Proti ১০০ takay ১ point
+        },
+        $set: { name: customerName } // Name update kora thakbe
+      },
+      { upsert: true, new: true }
+    );
+
     await Log.create({
-      action: 'CREATE', // যেহেতু নতুন সেল তৈরি হচ্ছে
-      itemName: `Invoice: ${newSale.invoiceNumber}`, // কি জিনিস নিয়ে কাজ হলো
-      performedBy: req.user.id, // কে করলো
-      changes: {
-        after: { 
-          totalAmount: newSale.totalAmount, 
-          customer: newSale.customerName,
-          payment: newSale.paymentMethod
-        }
-      }
+      module: 'Accounts',
+      action: 'CASH_IN',
+      targetId: newSale._id,
+      newValue: { 
+        amount: newSale.paidAmount, 
+        type: 'Income',
+        description: `Sale from Invoice: ${newSale.invoiceNumber}`
+      },
+      performedBy: req.user.id
     });
 
     res.status(201).json({ success: true, data: newSale });
@@ -67,7 +79,6 @@ exports.createSale = async (req, res) => {
 exports.updateDuePayment = async (req, res) => {
   try {
 
-    // Number() দিয়ে নিশ্চিত করো এটা সংখ্যা
     const amount = Number(req.body.amount); 
     
     if (isNaN(amount)) {
@@ -89,7 +100,6 @@ exports.updateDuePayment = async (req, res) => {
   }
 };
 
-// ১. সব সেলস দেখা (Pagination সহ)
 exports.getSales = async (req, res) => {
   try {
     const sales = await Sales.find()
@@ -101,7 +111,6 @@ exports.getSales = async (req, res) => {
   }
 };
 
-// ২. আজকের সেলস সামারি (Dashboard Logic)
 exports.getSalesStats = async (req, res) => {
   try {
     const today = new Date();
@@ -135,7 +144,6 @@ exports.getAdvancedStats = async (req, res) => {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    // ১. গত ৭ দিনের ডেইলি সেলস রিপোর্ট
     const dailySales = await Sales.aggregate([
       { $match: { createdAt: { $gte: sevenDaysAgo } } },
       {
@@ -148,7 +156,6 @@ exports.getAdvancedStats = async (req, res) => {
       { $sort: { "_id": 1 } }
     ]);
 
-    // ২. সবচেয়ে বেশি বিক্রি হওয়া ৫টি প্রোডাক্ট (Top Selling)
     const topProducts = await Sales.aggregate([
       { $unwind: "$items" },
       {
@@ -187,27 +194,21 @@ exports.downloadInvoice = async (req, res) => {
     const doc = new PDFDocument({ margin: 50 });
     const filename = `Invoice_${sale.invoiceNumber}.pdf`;
 
-    // রেসপন্স হেডার সেট করা যাতে ব্রাউজার বুঝতে পারে এটা একটা PDF
     res.setHeader('Content-disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-type', 'application/pdf');
 
     doc.pipe(res);
-
-    // --- PDF ডিজাইন শুরু ---
     
-    // Header
     doc.fillColor('#444444').fontSize(20).text('DOKAN ERP SYSTEM', 50, 50);
     doc.fontSize(10).text(`Invoice: ${sale.invoiceNumber}`, { align: 'right' });
     doc.text(`Date: ${new Date(sale.createdAt).toLocaleDateString()}`, { align: 'right' });
     doc.moveDown();
 
-    // কাস্টমার ডিটেইলস
     doc.fontSize(12).text(`Bill To:`, { underline: true });
     doc.text(`Name: ${sale.customerName}`);
     doc.text(`Phone: ${sale.customerPhone || 'N/A'}`);
     doc.moveDown();
 
-    // টেবিল হেডার
     const tableTop = 200;
     doc.fontSize(10).text('Item Description', 50, tableTop);
     doc.text('Qty', 250, tableTop);
@@ -215,7 +216,6 @@ exports.downloadInvoice = async (req, res) => {
     doc.text('Total', 450, tableTop);
     doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
 
-    // টেবিল ডাটা (লুপ)
     let i = 0;
     sale.items.forEach(item => {
       const y = tableTop + 30 + (i * 25);
@@ -226,12 +226,10 @@ exports.downloadInvoice = async (req, res) => {
       i++;
     });
 
-    // মোট হিসাব
     const footerTop = tableTop + 50 + (i * 25);
     doc.moveTo(50, footerTop).lineTo(550, footerTop).stroke();
     doc.fontSize(12).text(`Grand Total: BDT ${sale.totalAmount.toLocaleString()}`, 400, footerTop + 20, { bold: true });
 
-    // ফুটার
     doc.fontSize(10).text('Thank you for shopping with us!', 50, 700, { align: 'center', width: 500 });
 
     doc.end();
@@ -243,21 +241,18 @@ exports.downloadInvoice = async (req, res) => {
 
 exports.getProfitLossReport = async (req, res) => {
   try {
-    // ১. সেলস এবং গ্রস প্রফিট ক্যালকুলেশন
+
     const salesStats = await Sales.aggregate([
       {
         $group: {
           _id: null,
-          totalRevenue: { $sum: "$totalAmount" }, // মোট বিক্রি
+          totalRevenue: { $sum: "$totalAmount" }, 
           totalItemsSold: { $sum: { $size: "$items" } },
-          // COGS (Cost of Goods Sold) এবং Gross Profit এর লজিক 
-          // (ধরে নিচ্ছি আইটেমের ভেতর purchasePrice সেভ আছে, না থাকলে আমরা এভারেজ কস্ট ধরবো)
           totalSalesCount: { $sum: 1 }
         }
       }
     ]);
 
-    // ২. মোট খরচের হিসাব (Expenses)
     const totalExpenses = await Expense.aggregate([
       {
         $group: {
@@ -270,8 +265,6 @@ exports.getProfitLossReport = async (req, res) => {
     const revenue = salesStats.length > 0 ? salesStats[0].totalRevenue : 0;
     const expense = totalExpenses.length > 0 ? totalExpenses[0].amount : 0;
     
-    // ৩. নেট প্রফিট (এখানে আমরা গ্রস মার্জিন থেকে এক্সপেন্স বিয়োগ করছি)
-    // প্রফেশনাল সিস্টেমে: (বিক্রয়মূল্য - ক্রয়মূল্য) - খরচ = আসল লাভ
     const netProfit = revenue - expense; 
 
     res.status(200).json({
@@ -299,13 +292,10 @@ exports.getProductProfitAnalysis = async (req, res) => {
           name: { $first: "$items.name" },
           totalQtySold: { $sum: "$items.quantity" },
           totalRevenue: { $sum: "$items.total" },
-          // ধরে নিচ্ছি Inventory-তে purchasePrice ফিল্ড আছে
-          // আমরা লজিক্যালি profit ক্যালকুলেট করছি
+
           estimatedProfit: { 
-            $sum: { $subtract: ["$items.total", { $multiply: ["$items.quantity", 80000] }] } 
+            $sum: { $subtract: ["$items.total", { $multiply: ["$items.quantity", "$items.buyingPrice"] }] } 
           } 
-          // নোট: এখানে ৮০,০০০ ডেমো হিসেবে দেওয়া, প্রফেশনাললি আমরা 
-          // ইনভেন্টরি থেকে purchasePrice লুকআপ (Lookup) করে আনবো।
         }
       },
       { $sort: { estimatedProfit: -1 } }
@@ -344,7 +334,6 @@ exports.sendMonthlyReport = async (req, res) => {
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    // ১. ডাটা এগ্রিগেশন (সেলস এবং খরচ)
     const [monthlySales, monthlyExpenses] = await Promise.all([
       Sales.aggregate([
         { $match: { createdAt: { $gte: startOfMonth } } },
@@ -360,8 +349,6 @@ exports.sendMonthlyReport = async (req, res) => {
     const expenses = monthlyExpenses[0]?.total || 0;
     const netProfit = sales - expenses;
 
-    // ২. রিসিভেন্ট ইমেইল ডিটেক্ট করা (Fix for "No recipients defined")
-    // যদি টোকেন থেকে ইমেইল না পায়, তবে এনভায়রনমেন্ট ভ্যারিয়েবল থেকে নেবে
     const recipientEmail = req.user?.email || process.env.EMAIL_USER;
     const userName = req.user?.name || "Admin";
 
@@ -372,7 +359,6 @@ exports.sendMonthlyReport = async (req, res) => {
       });
     }
 
-    // ৩. ইমেইল অপশন এবং HTML টেমপ্লেট
     const emailOptions = {
       email: recipientEmail,
       subject: `📊 Business Summary - ${new Date().toLocaleString('default', { month: 'long' })}`,
@@ -412,6 +398,110 @@ exports.sendMonthlyReport = async (req, res) => {
       success: true, 
       message: `Report successfully sent to ${recipientEmail}` 
     });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.returnSale = async (req, res) => {
+  try {
+    const saleId = req.query.id; 
+    if (!saleId) return res.status(400).json({ success: false, message: "ID parameter is missing" });
+
+    const sale = await Sales.findById(saleId);
+    if (!sale) return res.status(404).json({ success: false, message: "Sale not found" });
+    
+    if (sale.status === 'Returned') {
+      return res.status(400).json({ success: false, message: "This sale is already returned" });
+    }
+
+    // ১. Inventory stock firiye ana
+    for (const item of sale.items) {
+      const product = await Inventory.findById(item.productId);
+      if (product) {
+        product.quantity += item.quantity;
+        if (product.quantity > product.minStockLevel) {
+          product.status = 'In Stock';
+        } else if (product.quantity > 0) {
+          product.status = 'Low Stock';
+        }
+        await product.save();
+      }
+    }
+
+    // ২. [CRITICAL UPDATE] Customer Ledger Adjustment
+    // Mal return mane spent kombe, points kombe, ar due thakle oitao minus hobe
+    await Customer.findOneAndUpdate(
+      { phone: sale.customerPhone },
+      { 
+        $inc: { 
+          totalSpent: -sale.totalAmount, // Negative increment mane minus kora
+          totalDue: -sale.dueAmount,      // Baki o minus hoye jabe
+          points: -Math.floor(sale.totalAmount / 100) 
+        }
+      }
+    );
+
+    // ৩. Sales status ar Profit adjustment
+    const oldProfit = sale.totalProfit;
+    sale.status = 'Returned';
+    sale.totalProfit = 0; 
+    await sale.save();
+
+    // ৪. Log create kora (Audit tracking)
+    await Log.create({
+      module: 'Sales',
+      action: 'RETURN',
+      targetId: sale._id,
+      changes: { 
+        reason: req.body.reason || 'Customer Return',
+        deductedProfit: oldProfit,
+        adjustedCustomer: sale.customerPhone
+      },
+      performedBy: req.user.id
+    });
+
+    res.status(200).json({ success: true, message: "Sale returned, Stock, Profit & Customer Balance updated!" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getCustomerHistory = async (req, res) => {
+  try {
+    const { phone } = req.params;
+
+    if (!phone) {
+      return res.status(400).json({ success: false, message: "কাস্টমার ফোন নাম্বার প্রয়োজন।" });
+    }
+
+    const salesHistory = await Sales.find({ customerPhone: phone })
+      .sort({ createdAt: -1 }) 
+      .populate('items.productId', 'name category');
+
+    if (salesHistory.length === 0) {
+      return res.status(404).json({ success: false, message: "এই কাস্টমারের কোনো কেনাকাটার রেকর্ড পাওয়া যায়নি।" });
+    }
+
+    const summary = salesHistory.reduce((acc, sale) => {
+      acc.totalSpent += sale.totalAmount;
+      acc.totalDue += (sale.dueAmount || 0); 
+      return acc;
+    }, { totalSpent: 0, totalDue: 0 });
+
+    res.status(200).json({
+      success: true,
+      count: salesHistory.length,
+      customerSummary: {
+        customerName: salesHistory[0].customerName, 
+        customerPhone: phone,
+        totalPurchases: salesHistory.length,
+        totalSpent: summary.totalSpent,
+        totalDue: summary.totalDue
+      },
+      data: salesHistory
+    });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

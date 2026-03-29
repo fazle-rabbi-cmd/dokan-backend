@@ -6,12 +6,12 @@ const inventorySchema = Joi.object({
   minStockLevel: Joi.number().integer().min(0),
   category: Joi.string().required(),
   warehouseLocation: Joi.string().required(),
-  sku: Joi.string().uppercase(), // optional, amader code auto banay
+  sku: Joi.string().uppercase(), 
  
   supplier: Joi.string().required().messages({
     'string.empty': 'Supplier ID is required'
   }),
-  image: Joi.any() // ইমেজের জন্য
+  image: Joi.any() 
 });
 
 exports.validateInventory = (req, res, next) => {

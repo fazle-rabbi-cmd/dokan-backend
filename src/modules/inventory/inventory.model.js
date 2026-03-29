@@ -4,8 +4,15 @@ const InventorySchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   sku: { type: String, required: true, unique: true, uppercase: true },
   quantity: { type: Number, default: 0, min: 0 },
+  unit: { type: String, default: 'Pcs', enum: ['Pcs', 'Kg', 'Ltr', 'Box', 'Packet'] },
+  buyingPrice: { type: Number, required: true, default: 0 },
+  sellingPrice: { type: Number, required: true, default: 0 },
   minStockLevel: { type: Number, default: 5 },
-  category: { type: String, required: true },
+  category: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Category', 
+    required: [true, 'Please select a category'] 
+  },
   warehouseLocation: { type: String, required: true }, 
   supplier: {
   type: mongoose.Schema.Types.ObjectId,

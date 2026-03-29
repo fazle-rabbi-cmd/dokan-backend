@@ -1,21 +1,23 @@
 const Inventory = require('./inventory.model');
 const Log = require('../logs/log.model');
-const { Parser } = require('json2csv'); // এটি নিশ্চিত করো ইনস্টল আছে (npm install json2csv)
+const { Parser } = require('json2csv'); 
 const sendLowStockEmail = require('../../utils/emailService');
 const Supplier = require('../supplier/supplier.model');
 
 exports.addItem = async (req, res) => {
   try {
-    // Multer বডি প্রসেস করার পর ডাটা এখান থেকে নেবে
+
     const { name, quantity, category, warehouseLocation, minStockLevel, supplier } = req.body;
 
     if (!name) {
       return res.status(400).json({ success: false, message: "Product name is required" });
     }
 
-    // SKU এবং Status লজিক
     const prefix = name.substring(0, 3).toUpperCase();
-    const sku = `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const existingSku = await Inventory.findOne({ sku });
+    if (existingSku) {
+        sku = `${prefix}-${Math.floor(10000 + Math.random() * 90000)}`; // Retry with longer number
+    }
     const qty = Number(quantity) || 0;
     const minLvl = Number(minStockLevel) || 5;
 
@@ -33,10 +35,9 @@ exports.addItem = async (req, res) => {
       supplier,
       status,
       addedBy: req.user.id,
-      image: req.file ? req.file.path : undefined // Cloudinary URL
+      image: req.file ? req.file.path : undefined 
     });
 
-    // অ্যাক্টিভিটি লগ
     await Log.create({
       itemId: newItem._id,
       itemName: newItem.name,
@@ -70,17 +71,15 @@ exports.exportToCSV = async (req, res) => {
 
 exports.getAllItems = async (req, res) => {
   try {
-    // 1. Pagination Setup
+    
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    // 2. Search & Filter Logic
     let queryObj = { ...req.query };
     const excludeFields = ['page', 'sort', 'limit', 'fields', 'search'];
     excludeFields.forEach(el => delete queryObj[el]);
 
-    // Advanced search (Name ba SKU diye)
     if (req.query.search) {
       queryObj.$or = [
         { name: { $regex: req.query.search, $options: 'i' } },
@@ -88,14 +87,14 @@ exports.getAllItems = async (req, res) => {
       ];
     }
 
-    // 3. Execute Query
     const items = await Inventory.find(queryObj)
       .populate('addedBy', 'name email')
+      .populate('category', 'name') // Category-r nam dekhano
+      .populate('supplier', 'name phone') // Supplier-er details
       .skip(skip)
       .limit(limit)
       .sort('-createdAt');
 
-    // 4. Metadata (Total count jate front-end e pagination kora jay)
     const total = await Inventory.countDocuments(queryObj);
 
     res.status(200).json({ 
@@ -116,16 +115,13 @@ exports.updateItem = async (req, res) => {
     const itemId = req.query.id; 
     if (!itemId) return res.status(400).json({ success: false, message: "ID is required" });
 
-    // ১. আইটেমটি খুঁজে বের করো এবং তার সাথে যুক্ত সাপ্লায়ারের ডাটা পপুলেট করো
     let item = await Inventory.findById(itemId).populate('supplier');
     if (!item) return res.status(404).json({ success: false, message: "Item not found" });
 
     const beforeUpdate = { quantity: item.quantity, status: item.status };
 
-    // ২. নতুন ডাটা দিয়ে আপডেট করো
     Object.assign(item, req.body);
 
-    // ৩. স্ট্যাটাস অটো-আপডেট
     if (item.quantity <= 0) {
       item.status = 'Out of Stock';
     } else if (item.quantity <= item.minStockLevel) {
@@ -136,10 +132,8 @@ exports.updateItem = async (req, res) => {
 
     await item.save(); 
 
-    // ৪. স্মার্ট অটোমেশন: পপুলেট করা সাপ্লায়ারকে সরাসরি মেইল পাঠানো
-    if (item.status === 'Low Stock' || item.status === 'Out of Stock') {
-      
-      // আমরা চেক করছি সাপ্লায়ার ডাটা আছে কি না এবং সে Active কি না
+    if (item.status === 'Low Stock' || item.status === 'Out of Stock') {  
+
       if (item.supplier && item.supplier.status === 'Active') {
         sendLowStockEmail(item.name, item.quantity, item.supplier.email, item.supplier.name)
           .catch(err => console.log("Email error:", err.message));
@@ -148,7 +142,6 @@ exports.updateItem = async (req, res) => {
       }
     }
 
-    // ৫. UPDATE Log তৈরি করা
     await Log.create({
       itemId: item._id,
       itemName: item.name,
@@ -174,7 +167,6 @@ exports.deleteItem = async (req, res) => {
     const item = await Inventory.findByIdAndDelete(itemId);
     if (!item) return res.status(404).json({ success: false, message: "Item not found" });
 
-    // DELETE Log তৈরি করা
     await Log.create({
       itemName: item.name,
       action: 'DELETE',
@@ -201,7 +193,9 @@ exports.getInventoryStats = async (req, res) => {
           },
           outOfStockCount: {
             $sum: { $cond: [{ $eq: ["$status", "Out of Stock"] }, 1, 0] }
-          }
+          },
+          totalValuation: { $sum: { $multiply: ["$quantity", "$buyingPrice"] } }, // Important for ERP
+          potentialRevenue: { $sum: { $multiply: ["$quantity", "$sellingPrice"] } },
         }
       }
     ]);
@@ -225,5 +219,59 @@ exports.getItemHistory = async (req, res) => {
     res.status(200).json({ success: true, count: logs.length, data: logs });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getLowStockItems = async (req, res) => {
+  try {
+    
+    const items = await Inventory.find({
+      $expr: { $lte: ["$quantity", "$minStockLevel"] }
+    }).populate('supplier', 'name email phone');
+
+    res.status(200).json({ success: true, count: items.length, data: items });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.adjustStock = async (req, res) => {
+  console.log("--- Adjust Stock Start ---");
+  try {
+    const { itemId, adjustedQty, reason } = req.body;
+    const changeQty = Number(adjustedQty);
+
+    const updatedItem = await Inventory.findByIdAndUpdate(
+      itemId,
+      { $inc: { quantity: changeQty } },
+      { new: true, runValidators: false }
+    );
+
+    if (!updatedItem) {
+      return res.status(404).json({ success: false, message: "Item not found" });
+    }
+
+    await Log.create({
+      itemId,
+      itemName: updatedItem.name, 
+      action: 'UPDATE', 
+      changes: { 
+        reason: reason || 'Stock adjustment', 
+        before: updatedItem.quantity - changeQty,
+        after: updatedItem.quantity 
+      },
+      performedBy: req.user.id
+    });
+
+    console.log("--- Adjust Stock Success ---");
+    res.status(200).json({ 
+      success: true, 
+      message: "Stock adjusted successfully", 
+      currentQuantity: updatedItem.quantity 
+    });
+
+  } catch (error) {
+    console.error("Detailed Error:", error.message);
+    res.status(500).json({ success: false, message: "Log updating failed but stock updated." });
   }
 };

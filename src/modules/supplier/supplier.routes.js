@@ -7,7 +7,8 @@ router.use(protect);
 
 router.post('/add', authorize('Admin'), addSupplier);
 router.get('/all', getSuppliers);
-router.patch('/update', authorize('Admin'), updateSupplier); // ID আসবে query param এ
-router.delete('/delete', authorize('Admin'), deleteSupplier); // ID আসবে query param এ
+router.get('/details/:id',authorize('Admin'), getSupplierDetails);
+router.patch('/update', authorize('Admin'), updateSupplier); 
+router.delete('/delete', authorize('Admin'), deleteSupplier); 
 
 module.exports = router;

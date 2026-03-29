@@ -2,7 +2,6 @@ const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const multer = require('multer');
 
-// সরাসরি কনফিগারেশন (স্ক্রিনশট ১৭০ অনুযায়ী)
 cloudinary.config({
   cloud_name: 'dof5bc6oc',
   api_key: '722973273511318',
@@ -17,10 +16,9 @@ const storage = new CloudinaryStorage({
   },
 });
 
-// এই অংশটি নিশ্চিত করো
 const upload = multer({ 
     storage: storage,
-    limits: { fileSize: 1024 * 1024 * 5 } // ৫ এমবি লিমিট
+    limits: { fileSize: 1024 * 1024 * 5 } 
 });
 
 module.exports = upload;

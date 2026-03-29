@@ -7,9 +7,11 @@ const SalesSchema = new mongoose.Schema({
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', required: true },
     name: { type: String },
     quantity: { type: Number, required: true },
-    price: { type: Number, required: true }, // প্রতিটির দাম
-    total: { type: Number } // quantity * price
+    buyingPrice: { type: Number, required: true },
+    price: { type: Number, required: true }, 
+    total: { type: Number } 
   }],
+  totalProfit: { type: Number, default: 0 },
   totalAmount: { type: Number, required: true },
   paymentMethod: { type: String, enum: ['Cash', 'Card', 'Mobile Banking'], default: 'Cash' },
   soldBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -17,7 +19,7 @@ const SalesSchema = new mongoose.Schema({
   
   paidAmount: { type: Number, default: 0 },
   dueAmount: { type: Number, default: 0 },
-  status: { type: String, enum: ['Paid', 'Partial', 'Due'], default: 'Paid' }
+  status: { type: String, enum: ['Paid', 'Partial', 'Due', 'Returned'], default: 'Paid' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Sales', SalesSchema);

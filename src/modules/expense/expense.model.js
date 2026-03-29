@@ -12,7 +12,7 @@ const ExpenseSchema = new mongoose.Schema({
   },
   category: { 
     type: String, 
-    enum: ['Rent', 'Utility', 'Salary', 'Marketing', 'Maintenance', 'Others'], 
+    enum: ['Rent', 'Utility', 'Salary', 'Marketing', 'Maintenance', 'Inventory Purchase', 'Others'], 
     default: 'Others' 
   },
   expenseDate: { 
@@ -23,6 +23,7 @@ const ExpenseSchema = new mongoose.Schema({
     type: String, 
     trim: true 
   },
+  receiptImage: { type: String },
   recordedBy: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'User', 
